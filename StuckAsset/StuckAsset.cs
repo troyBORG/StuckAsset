@@ -24,6 +24,8 @@ public class StuckAssetMod : ResoniteMod {
 	private CancellationTokenSource? cancellationTokenSource;
 	private Task? monitorTask;
 	private Dictionary<EngineGatherJob, DateTime> jobStartTimes = new Dictionary<EngineGatherJob, DateTime>();
+	private Dictionary<EngineGatherJob, long> jobLastBytes = new Dictionary<EngineGatherJob, long>(); // Track last bytes received to detect progress
+	private Dictionary<EngineGatherJob, DateTime> jobLastProgressCheck = new Dictionary<EngineGatherJob, DateTime>(); // Track when we last checked progress
 	private Dictionary<Uri, DateTime> retryQueue = new Dictionary<Uri, DateTime>(); // URLs to retry later
 	private Dictionary<Uri, int> retryCounts = new Dictionary<Uri, int>(); // Track retry attempts per asset
 	private Dictionary<Uri, DateTime> assetCooldowns = new Dictionary<Uri, DateTime>(); // Cooldown tracking
@@ -96,6 +98,13 @@ public class StuckAssetMod : ResoniteMod {
 		"retryPriority", 
 		"Priority for retried assets (0.0-1.0, lower = less priority)", 
 		() => 0.1f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> noProgressTimeoutSeconds = new ModConfigurationKey<float>(
+		"noProgressTimeoutSeconds", 
+		"Timeout for jobs with no progress (seconds). Job must exceed timeout AND show no progress to be considered stuck.", 
+		() => 60f
 	);
 	
 	[AutoRegisterConfigKey]
@@ -277,6 +286,8 @@ public class StuckAssetMod : ResoniteMod {
 					}
 					foreach (var job in toRemove) {
 						jobStartTimes.Remove(job);
+						jobLastBytes.Remove(job);
+						jobLastProgressCheck.Remove(job);
 					}
 				}
 				
@@ -294,10 +305,14 @@ public class StuckAssetMod : ResoniteMod {
 						    job.State != GatherJobState.Finished && 
 						    job.State != GatherJobState.Failed) {
 							jobStartTimes[job] = now;
+							jobLastProgressCheck[job] = now;
+							// Get initial bytes received
+							var bytesReceived = GetBytesReceived(job);
+							jobLastBytes[job] = bytesReceived;
 						}
 					}
 					
-					// Check if job is stuck
+					// Check if job is stuck (must be timed out AND not making progress)
 					if (IsJobStuck(job, now)) {
 						stuckCount++;
 						totalStuckJobsDetected++;
@@ -308,6 +323,8 @@ public class StuckAssetMod : ResoniteMod {
 						// Remove from tracking
 						lock (jobStartTimesLock) {
 							jobStartTimes.Remove(job);
+							jobLastBytes.Remove(job);
+							jobLastProgressCheck.Remove(job);
 						}
 					}
 				}
@@ -341,6 +358,7 @@ public class StuckAssetMod : ResoniteMod {
 		// Get timeout values from config
 		var localTimeout = Config?.GetValue(localTimeoutSeconds) ?? 90f;
 		var remoteTimeout = Config?.GetValue(remoteTimeoutSeconds) ?? 240f;
+		var noProgressTimeout = Config?.GetValue(noProgressTimeoutSeconds) ?? 60f;
 		
 		// For local:// assets, check if the owner has left the session (with fallback)
 		bool ownerLeft = false;
@@ -354,23 +372,114 @@ public class StuckAssetMod : ResoniteMod {
 			}
 		}
 		
+		// If owner left, consider it stuck immediately (no point waiting)
+		if (ownerLeft) {
+			return true;
+		}
+		
 		DateTime startTime;
 		lock (jobStartTimesLock) {
 			if (!jobStartTimes.TryGetValue(job, out startTime)) {
 				// If we don't have a start time, use current time as fallback
 				startTime = now;
 				jobStartTimes[job] = startTime;
+				jobLastProgressCheck[job] = now;
+				var bytesReceived = GetBytesReceived(job);
+				jobLastBytes[job] = bytesReceived;
 			}
 		}
 		
 		var elapsed = (now - startTime).TotalSeconds;
 		
-		// Session downloads should timeout faster
+		// Check if job has exceeded timeout
+		bool exceededTimeout = false;
 		if (job.URL?.Scheme == "local") {
-			return elapsed > localTimeout;
+			exceededTimeout = elapsed > localTimeout;
+		} else {
+			exceededTimeout = elapsed > remoteTimeout;
 		}
 		
-		return elapsed > remoteTimeout;
+		// If not exceeded timeout, definitely not stuck
+		if (!exceededTimeout) {
+			return false;
+		}
+		
+		// Job exceeded timeout, but check if it's making progress
+		// If it's actively downloading, don't consider it stuck
+		lock (jobStartTimesLock) {
+			if (!jobLastProgressCheck.TryGetValue(job, out DateTime lastCheck)) {
+				lastCheck = now;
+				jobLastProgressCheck[job] = now;
+			}
+			
+			var timeSinceLastCheck = (now - lastCheck).TotalSeconds;
+			
+			// Check progress at least every noProgressTimeout seconds
+			if (timeSinceLastCheck >= noProgressTimeout) {
+				var currentBytes = GetBytesReceived(job);
+				var lastBytes = jobLastBytes.TryGetValue(job, out long lb) ? lb : 0;
+				
+				// Update tracking
+				jobLastBytes[job] = currentBytes;
+				jobLastProgressCheck[job] = now;
+				
+				// If bytes increased, job is making progress - not stuck
+				if (currentBytes > lastBytes) {
+					if (Config?.GetValue(logVerboseDebug) ?? false) {
+						Msg($"Job {job.URL} is slow but making progress ({currentBytes - lastBytes} bytes in {timeSinceLastCheck:F1}s), not marking as stuck");
+					}
+					return false; // Making progress, not stuck
+				}
+			} else {
+				// Not time to check progress yet, but we know it was making progress before
+				// Don't mark as stuck if we recently saw progress
+				return false;
+			}
+		}
+		
+		// Job exceeded timeout AND is not making progress - it's stuck
+		return true;
+	}
+
+	private long GetBytesReceived(EngineGatherJob job) {
+		try {
+			// Try to get bytes received using reflection
+			var bytesField = job.GetType().GetField("_bytesReceived", 
+				System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+			if (bytesField == null) {
+				bytesField = typeof(GatherJob).GetField("_bytesReceived", 
+					System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+			}
+			if (bytesField != null) {
+				var value = bytesField.GetValue(job);
+				if (value is long longValue) {
+					return longValue;
+				}
+				if (value is int intValue) {
+					return intValue;
+				}
+			}
+			
+			// Try property
+			var bytesProperty = job.GetType().GetProperty("BytesReceived", 
+				System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+			if (bytesProperty == null) {
+				bytesProperty = typeof(GatherJob).GetProperty("BytesReceived", 
+					System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+			}
+			if (bytesProperty != null) {
+				var value = bytesProperty.GetValue(job);
+				if (value is long longValue) {
+					return longValue;
+				}
+				if (value is int intValue) {
+					return intValue;
+				}
+			}
+		} catch {
+			// If we can't get bytes, assume 0 (conservative - won't mark as stuck if we can't verify)
+		}
+		return 0;
 	}
 
 	private bool IsUserStillInSession(string machineId) {

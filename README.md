@@ -54,6 +54,7 @@ The mod has extensive configuration options accessible through Resonite's mod co
 - **monitorIntervalSeconds** (default: 10s) - How often to check for stuck jobs
 - **remoteTimeoutSeconds** (default: 240s / 4 minutes) - Timeout for remote asset downloads
 - **localTimeoutSeconds** (default: 90s / 1.5 minutes) - Timeout for local/session asset transfers
+- **noProgressTimeoutSeconds** (default: 60s) - Timeout for jobs with no progress. A job must exceed the main timeout AND show no progress for this duration to be considered stuck
 
 ### Retry Behavior
 
@@ -96,7 +97,10 @@ The mod has extensive configuration options accessible through Resonite's mod co
 The mod uses a background monitoring task (not frame-based patches) to minimize performance impact:
 
 1. **Background monitoring**: Runs continuously, checking all asset gather jobs at configurable intervals
-2. **Stuck detection**: Identifies jobs that exceed timeout thresholds
+2. **Progress-aware stuck detection**: 
+   - Tracks bytes received for each job
+   - Only marks jobs as stuck if they exceed timeout AND show no progress
+   - Jobs that are slow but actively downloading are NOT considered stuck
 3. **Smart skipping**: Cancels stuck jobs and adds them to a retry queue instead of failing them permanently
 4. **Progressive cache clearing**: 
    - 1st skip → cancel only (no cache clear)
