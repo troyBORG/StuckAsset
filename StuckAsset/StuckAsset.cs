@@ -473,15 +473,18 @@ public class StuckAssetMod : ResoniteMod {
 					return;
 				}
 				
-				// Add to retry queue
+				// Calculate retry delay and cooldown
 				var retryDelay = ownerLeft 
 					? (Config?.GetValue(retryDelayOwnerLeftSeconds) ?? 300f)
 					: (Config?.GetValue(retryDelaySeconds) ?? 45f);
 				
-				retryQueue[job.URL] = DateTime.UtcNow.AddSeconds(retryDelay);
-				
-				// Set cooldown
 				var cooldown = Config?.GetValue(cooldownPerAssetSeconds) ?? 120f;
+				
+				// Set retry time to max of delay and cooldown to avoid queue waking up early
+				var retryAt = DateTime.UtcNow.AddSeconds(Math.Max(retryDelay, cooldown));
+				retryQueue[job.URL] = retryAt;
+				
+				// Set cooldown (for tracking, but retry time already accounts for it)
 				assetCooldowns[job.URL] = DateTime.UtcNow.AddSeconds(cooldown);
 				
 				if (Config?.GetValue(logStuckDetections) ?? true) {
@@ -496,11 +499,16 @@ public class StuckAssetMod : ResoniteMod {
 	private void CancelJob(EngineGatherJob job) {
 		try {
 			var shouldCancel = Config?.GetValue(cancelJobOnSkip) ?? true;
+			var jobType = job.GetType();
 			
 			if (shouldCancel) {
-				// Try to find a Cancel method
-				var cancelMethod = typeof(GatherJob).GetMethod("Cancel", 
+				// Try to find a Cancel method on the actual type first, then base type
+				var cancelMethod = jobType.GetMethod("Cancel", 
 					System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+				if (cancelMethod == null) {
+					cancelMethod = typeof(GatherJob).GetMethod("Cancel", 
+						System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+				}
 				if (cancelMethod != null) {
 					cancelMethod.Invoke(job, null);
 					return;
@@ -508,8 +516,12 @@ public class StuckAssetMod : ResoniteMod {
 			}
 			
 			// If no Cancel method or cancelJobOnSkip is false, try to fail it
-			var failMethod = typeof(GatherJob).GetMethod("Fail", 
+			var failMethod = jobType.GetMethod("Fail", 
 				System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+			if (failMethod == null) {
+				failMethod = typeof(GatherJob).GetMethod("Fail", 
+					System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+			}
 			if (failMethod != null) {
 				// Fail with a reason that indicates it should be retryable
 				failMethod.Invoke(job, new object?[] { 
@@ -585,13 +597,6 @@ public class StuckAssetMod : ResoniteMod {
 					var toRemove = new List<Uri>();
 					foreach (var kvp in retryQueue) {
 						if (now >= kvp.Value) {
-							// Check cooldown
-							if (assetCooldowns.TryGetValue(kvp.Key, out DateTime cooldownUntil)) {
-								if (now < cooldownUntil) {
-									continue; // Still in cooldown
-								}
-							}
-							
 							// Check retry count
 							if (!retryCounts.TryGetValue(kvp.Key, out int count)) {
 								count = 0;
@@ -602,6 +607,15 @@ public class StuckAssetMod : ResoniteMod {
 								continue; // Exceeded max retries
 							}
 							
+							// Cooldown is already accounted for in retry time, but double-check as safety
+							if (assetCooldowns.TryGetValue(kvp.Key, out DateTime cooldownUntil)) {
+								if (now < cooldownUntil) {
+									// Still in cooldown, reschedule for when cooldown expires
+									retryQueue[kvp.Key] = cooldownUntil;
+									continue;
+								}
+							}
+							
 							toRetry.Add(kvp.Key);
 							toRemove.Add(kvp.Key);
 						}
@@ -609,6 +623,9 @@ public class StuckAssetMod : ResoniteMod {
 					foreach (var url in toRemove) {
 						retryQueue.Remove(url);
 					}
+					
+					// Cleanup old entries (prevent memory leak)
+					CleanupRetryTracking(now);
 				}
 				
 				// Retry the assets
@@ -667,6 +684,41 @@ public class StuckAssetMod : ResoniteMod {
 			} catch (Exception ex) {
 				Error($"Error updating stats: {ex}");
 			}
+		}
+	}
+
+	private void CleanupRetryTracking(DateTime now) {
+		// Clean up entries older than 30 minutes
+		var maxAge = TimeSpan.FromMinutes(30);
+		var cutoffTime = now - maxAge;
+		
+		var toRemove = new List<Uri>();
+		
+		// Remove old cooldowns
+		foreach (var kvp in assetCooldowns) {
+			if (kvp.Value < cutoffTime) {
+				toRemove.Add(kvp.Key);
+			}
+		}
+		foreach (var url in toRemove) {
+			assetCooldowns.Remove(url);
+		}
+		toRemove.Clear();
+		
+		// Remove retry counts for assets that:
+		// 1. Are old (30+ minutes)
+		// 2. Have reached max retries and are not in the queue
+		var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
+		foreach (var kvp in retryCounts) {
+			// If it's not in retry queue and has reached max, or is just old, remove it
+			if (!retryQueue.ContainsKey(kvp.Key)) {
+				if (kvp.Value >= maxRetries) {
+					toRemove.Add(kvp.Key);
+				}
+			}
+		}
+		foreach (var url in toRemove) {
+			retryCounts.Remove(url);
 		}
 	}
 

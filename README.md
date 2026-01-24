@@ -30,7 +30,7 @@ When this happens, the asset queue can get blocked, preventing new assets from l
 2. **Fixes your local queue**: Each person's mod fixes their own stuck asset queue
 3. **Works independently**: Even if only some people have the mod, those who do will have their queues fixed automatically
 
-So if you're in a session where someone left mid-upload and everyone is stuck, anyone with this mod installed will have their queue automatically fixed. Others without the mod will need to wait for the timeout or restart.
+**This mod can't fix other people's queues; it only fixes the queue on the machine it runs on.** So if you're in a session where someone left mid-upload and everyone is stuck, anyone with this mod installed will have their queue automatically fixed. Others without the mod will need to wait for the timeout or restart.
 
 ## Installation
 
