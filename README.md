@@ -59,7 +59,7 @@ So if you're in a session where someone left mid-upload and everyone is stuck, a
    dotnet build
    ```
 
-3. The mod will automatically copy to your Resonite `rml_mods` folder if `CopyToMods` is enabled (default). Or manually copy `ExampleMod/bin/Debug/net10.0/StuckAsset.dll` to your `rml_mods` folder.
+3. The mod will automatically copy to your Resonite `rml_mods` folder if `CopyToMods` is enabled (default). Or manually copy `StuckAsset/bin/Debug/net10.0/StuckAsset.dll` to your `rml_mods` folder.
 
 ## Configuration
 
@@ -68,7 +68,7 @@ The mod uses the following default timeouts (hardcoded in the source):
 - **Session download timeout**: 2 minutes (120 seconds)  
 - **Monitor interval**: 10 seconds
 
-These values are optimized for most use cases, but can be adjusted in the source code if needed. To change them, edit the constants in `ExampleMod/ExampleMod.cs`:
+These values are optimized for most use cases, but can be adjusted in the source code if needed. To change them, edit the constants in `StuckAsset/StuckAsset.cs`:
 
 ```csharp
 private static readonly float STUCK_JOB_TIMEOUT_SECONDS = 300f; // 5 minutes
