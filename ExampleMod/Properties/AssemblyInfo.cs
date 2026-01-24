@@ -1,9 +1,9 @@
 ﻿using System.Reflection;
 
-[assembly: AssemblyTitle("ExampleMod")]
-[assembly: AssemblyProduct("ExampleMod")]
-[assembly: AssemblyDescription("Description of your mod")]
-[assembly: AssemblyCompany("ExampleAuthor")]
-[assembly: AssemblyCopyright("Copyright © 2026 ExampleAuthor")]
-[assembly: AssemblyVersion(ExampleMod.ExampleMod.VERSION_CONSTANT)]
-[assembly: AssemblyFileVersion(ExampleMod.ExampleMod.VERSION_CONSTANT)]
+[assembly: AssemblyTitle("StuckAsset")]
+[assembly: AssemblyProduct("StuckAsset")]
+[assembly: AssemblyDescription("Mod to fix stuck asset queues in Resonite")]
+[assembly: AssemblyCompany("troyBORG")]
+[assembly: AssemblyCopyright("Copyright © 2026 troyBORG")]
+[assembly: AssemblyVersion(StuckAsset.StuckAssetMod.VERSION_CONSTANT)]
+[assembly: AssemblyFileVersion(StuckAsset.StuckAssetMod.VERSION_CONSTANT)]

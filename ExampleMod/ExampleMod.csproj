@@ -5,6 +5,7 @@
 		<LangVersion>14.0</LangVersion>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
+		<AssemblyName>StuckAsset</AssemblyName>
 		<!-- Change CopyToMods to true if you'd like builds to be moved into the Mods folder automatically-->
 		<CopyToMods Condition="'$(CopyToMods)'==''">true</CopyToMods>
 	</PropertyGroup>
@@ -14,6 +15,7 @@
 		<ResonitePath>$(MSBuildThisFileDirectory)Resonite/</ResonitePath>
 		<ResonitePath Condition="Exists('C:\Program Files (x86)\Steam\steamapps\common\Resonite\')">C:\Program Files (x86)\Steam\steamapps\common\Resonite\</ResonitePath>
 		<ResonitePath Condition="Exists('$(HOME)/.steam/steam/steamapps/common/Resonite/')">$(HOME)/.steam/steam/steamapps/common/Resonite/</ResonitePath>
+		<ResonitePath Condition="Exists('$(HOME)/.local/share/Steam/steamapps/common/Resonite/')">$(HOME)/.local/share/Steam/steamapps/common/Resonite/</ResonitePath>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -27,6 +29,18 @@
 		</Reference>
 		<Reference Include="FrooxEngine">
 			<HintPath>$(ResonitePath)FrooxEngine.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="Elements.Assets">
+			<HintPath>$(ResonitePath)Elements.Assets.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="Elements.Core">
+			<HintPath>$(ResonitePath)Elements.Core.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="SkyFrost.Base">
+			<HintPath>$(ResonitePath)SkyFrost.Base.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
 	</ItemGroup>
