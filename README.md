@@ -1,6 +1,6 @@
 # StuckAsset
 
-A [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod for [Resonite](https://resonite.com/) that fixes stuck asset queues.
+A [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod for [Resonite](https://resonite.com/) that automatically fixes stuck asset queues.
 
 ## What it does
 
@@ -35,25 +35,81 @@ So if you're in a session where someone left mid-upload and everyone is stuck, a
 
 ## Installation
 
-1. Install [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader).
-2. Place `StuckAsset.dll` into your `rml_mods` folder. This folder should be at:
-   - Windows: `C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods`
-   - Linux: `~/.steam/steam/steamapps/common/Resonite/rml_mods`
+1. Install [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) if you haven't already.
+2. Download the latest `StuckAsset.dll` from the [Releases](https://github.com/troyBORG/StuckAsset/releases) page.
+3. Place `StuckAsset.dll` into your `rml_mods` folder. This folder should be at:
+   - **Windows**: `C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods`
+   - **Linux**: `~/.steam/steam/steamapps/common/Resonite/rml_mods` or `~/.local/share/Steam/steamapps/common/Resonite/rml_mods`
    - You can create it if it's missing, or if you launch the game once with ResoniteModLoader installed it will create this folder for you.
-3. Start the game. If you want to verify that the mod is working you can check your Resonite logs for "StuckAsset mod initialized" message.
+4. Start the game. If you want to verify that the mod is working you can check your Resonite logs for:
+   ```
+   StuckAsset mod initialized - monitoring asset gather jobs for stuck states
+   ```
+
+## Building from source
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/troyBORG/StuckAsset.git
+   cd StuckAsset
+   ```
+
+2. Build the project:
+   ```bash
+   dotnet build
+   ```
+
+3. The mod will automatically copy to your Resonite `rml_mods` folder if `CopyToMods` is enabled (default). Or manually copy `ExampleMod/bin/Debug/net10.0/StuckAsset.dll` to your `rml_mods` folder.
 
 ## Configuration
 
-The mod uses the following default timeouts (hardcoded):
+The mod uses the following default timeouts (hardcoded in the source):
 - **Stuck job timeout**: 5 minutes (300 seconds)
 - **Session download timeout**: 2 minutes (120 seconds)  
 - **Monitor interval**: 10 seconds
 
-These values are optimized for most use cases, but can be adjusted in the source code if needed.
+These values are optimized for most use cases, but can be adjusted in the source code if needed. To change them, edit the constants in `ExampleMod/ExampleMod.cs`:
 
-## Building from source
+```csharp
+private static readonly float STUCK_JOB_TIMEOUT_SECONDS = 300f; // 5 minutes
+private static readonly float MONITOR_INTERVAL_SECONDS = 10f; // Check every 10 seconds
+private static readonly float SESSION_DOWNLOAD_TIMEOUT_SECONDS = 120f; // 2 minutes
+```
 
-1. Clone this repository
-2. Open the solution in your IDE
-3. Build the project - it will automatically copy to your Resonite mods folder if `CopyToMods` is enabled
-4. Or manually copy `ExampleMod/bin/Debug/net10.0/ExampleMod.dll` to your `rml_mods` folder and rename it to `StuckAsset.dll`
+## How it works
+
+The mod uses Harmony patches to monitor the asset loading system:
+
+1. **Background monitoring task**: Runs continuously, checking all asset gather jobs every 10 seconds
+2. **AssetManager.Update patch**: Also checks for stuck jobs during normal asset manager updates
+3. **Owner detection**: For `local://` assets, checks if the owner (identified by machine ID) is still in any world
+4. **Automatic cleanup**: Uses reflection to call the private `Fail` method on stuck jobs, allowing the queue to continue
+
+## Troubleshooting
+
+### Mod not loading
+- Make sure ResoniteModLoader is installed correctly
+- Check that `StuckAsset.dll` is in the `rml_mods` folder (not a subfolder)
+- Check Resonite logs for any error messages
+
+### Jobs still getting stuck
+- The mod may need time to detect stuck jobs (up to 10 seconds)
+- Very long-running legitimate downloads may be incorrectly flagged - adjust timeouts if needed
+- Check the logs for cleanup messages to see if the mod is working
+
+### False positives
+If legitimate downloads are being cleaned up too early, increase the timeout values in the source code and rebuild.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues or pull requests.
+
+## License
+
+This mod is provided as-is. Feel free to use, modify, and distribute as needed.
+
+## Credits
+
+- Created by [troyBORG](https://github.com/troyBORG)
+- Built with [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)
+- Uses [Harmony](https://github.com/pardeike/Harmony) for patching
