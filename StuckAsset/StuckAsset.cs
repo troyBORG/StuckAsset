@@ -27,6 +27,7 @@ public class StuckAssetMod : ResoniteMod {
 	private Dictionary<Uri, DateTime> retryQueue = new Dictionary<Uri, DateTime>(); // URLs to retry later
 	private Dictionary<Uri, int> retryCounts = new Dictionary<Uri, int>(); // Track retry attempts per asset
 	private Dictionary<Uri, DateTime> assetCooldowns = new Dictionary<Uri, DateTime>(); // Cooldown tracking
+	private Dictionary<Uri, DateTime> assetFirstSeen = new Dictionary<Uri, DateTime>(); // Track when assets were first seen for cleanup
 	private object jobStartTimesLock = new object();
 	private object retryQueueLock = new object();
 	
@@ -487,6 +488,11 @@ public class StuckAssetMod : ResoniteMod {
 				// Set cooldown (for tracking, but retry time already accounts for it)
 				assetCooldowns[job.URL] = DateTime.UtcNow.AddSeconds(cooldown);
 				
+				// Track when we first saw this asset for cleanup purposes
+				if (!assetFirstSeen.ContainsKey(job.URL)) {
+					assetFirstSeen[job.URL] = DateTime.UtcNow;
+				}
+				
 				if (Config?.GetValue(logStuckDetections) ?? true) {
 					Msg($"Skipped stuck job: {job.URL} - {reason}");
 				}
@@ -694,31 +700,30 @@ public class StuckAssetMod : ResoniteMod {
 		
 		var toRemove = new List<Uri>();
 		
-		// Remove old cooldowns
-		foreach (var kvp in assetCooldowns) {
+		// Remove old entries based on when they were first seen
+		foreach (var kvp in assetFirstSeen) {
 			if (kvp.Value < cutoffTime) {
+				// Asset is old, remove all tracking for it
 				toRemove.Add(kvp.Key);
 			}
 		}
-		foreach (var url in toRemove) {
-			assetCooldowns.Remove(url);
-		}
-		toRemove.Clear();
 		
-		// Remove retry counts for assets that:
-		// 1. Are old (30+ minutes)
-		// 2. Have reached max retries and are not in the queue
+		// Also remove entries that have reached max retries and are not in the queue
 		var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
 		foreach (var kvp in retryCounts) {
-			// If it's not in retry queue and has reached max, or is just old, remove it
-			if (!retryQueue.ContainsKey(kvp.Key)) {
-				if (kvp.Value >= maxRetries) {
+			// If it's not in retry queue and has reached max retries, remove it
+			if (!retryQueue.ContainsKey(kvp.Key) && kvp.Value >= maxRetries) {
+				if (!toRemove.Contains(kvp.Key)) {
 					toRemove.Add(kvp.Key);
 				}
 			}
 		}
+		
+		// Clean up all dictionaries for removed URLs
 		foreach (var url in toRemove) {
+			assetCooldowns.Remove(url);
 			retryCounts.Remove(url);
+			assetFirstSeen.Remove(url);
 		}
 	}
 
