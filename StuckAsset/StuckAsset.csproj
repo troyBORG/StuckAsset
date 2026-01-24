@@ -43,6 +43,10 @@
 			<HintPath>$(ResonitePath)SkyFrost.Base.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
+		<Reference Include="FrooxEngine.Store">
+			<HintPath>$(ResonitePath)FrooxEngine.Store.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
 	</ItemGroup>
 
 	<ItemGroup>
