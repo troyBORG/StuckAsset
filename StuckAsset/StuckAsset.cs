@@ -14,7 +14,7 @@ using SkyFrost.Base;
 namespace StuckAsset;
 // Mod to fix stuck asset queues in Resonite
 public class StuckAssetMod : ResoniteMod {
-	internal const string VERSION_CONSTANT = "1.0.0";
+	internal const string VERSION_CONSTANT = "1.1.0";
 	public override string Name => "StuckAsset";
 	public override string Author => "troyBORG";
 	public override string Version => VERSION_CONSTANT;
@@ -25,6 +25,8 @@ public class StuckAssetMod : ResoniteMod {
 	private Task? monitorTask;
 	private Dictionary<EngineGatherJob, DateTime> jobStartTimes = new Dictionary<EngineGatherJob, DateTime>();
 	private Dictionary<Uri, DateTime> retryQueue = new Dictionary<Uri, DateTime>(); // URLs to retry later
+	private Dictionary<Uri, int> retryCounts = new Dictionary<Uri, int>(); // Track retry attempts per asset
+	private Dictionary<Uri, DateTime> assetCooldowns = new Dictionary<Uri, DateTime>(); // Cooldown tracking
 	private object jobStartTimesLock = new object();
 	private object retryQueueLock = new object();
 	
@@ -38,6 +40,134 @@ public class StuckAssetMod : ResoniteMod {
 	// Configuration
 	private static ModConfiguration? Config;
 	
+	// Feature toggles
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> enabled = new ModConfigurationKey<bool>(
+		"enabled", 
+		"Enable the StuckAsset mod", 
+		() => true
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> monitorIntervalSeconds = new ModConfigurationKey<float>(
+		"monitorIntervalSeconds", 
+		"Interval between monitoring checks (seconds)", 
+		() => 10f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> remoteTimeoutSeconds = new ModConfigurationKey<float>(
+		"remoteTimeoutSeconds", 
+		"Timeout for remote asset downloads (seconds)", 
+		() => 240f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> localTimeoutSeconds = new ModConfigurationKey<float>(
+		"localTimeoutSeconds", 
+		"Timeout for local/session asset transfers (seconds)", 
+		() => 90f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> retryDelaySeconds = new ModConfigurationKey<float>(
+		"retryDelaySeconds", 
+		"Delay before retrying a skipped asset (seconds)", 
+		() => 45f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> retryDelayOwnerLeftSeconds = new ModConfigurationKey<float>(
+		"retryDelayOwnerLeftSeconds", 
+		"Delay before retrying when owner left (seconds)", 
+		() => 300f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> retryCheckIntervalSeconds = new ModConfigurationKey<float>(
+		"retryCheckIntervalSeconds", 
+		"Interval for checking retry queue (seconds)", 
+		() => 20f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> retryPriority = new ModConfigurationKey<float>(
+		"retryPriority", 
+		"Priority for retried assets (0.0-1.0, lower = less priority)", 
+		() => 0.1f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> clearCacheOnSkip = new ModConfigurationKey<bool>(
+		"clearCacheOnSkip", 
+		"Clear asset cache when skipping (can cause re-downloads)", 
+		() => false
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> cancelJobOnSkip = new ModConfigurationKey<bool>(
+		"cancelJobOnSkip", 
+		"Cancel jobs when skipping (vs failing them)", 
+		() => true
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<int> maxRetriesPerAsset = new ModConfigurationKey<int>(
+		"maxRetriesPerAsset", 
+		"Maximum retry attempts per asset before giving up", 
+		() => 3
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<int> maxRetryQueueSize = new ModConfigurationKey<int>(
+		"maxRetryQueueSize", 
+		"Maximum size of retry queue", 
+		() => 250
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<float> cooldownPerAssetSeconds = new ModConfigurationKey<float>(
+		"cooldownPerAssetSeconds", 
+		"Minimum cooldown before same asset can be retried (seconds)", 
+		() => 120f
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> onlyAffectLocalAssets = new ModConfigurationKey<bool>(
+		"onlyAffectLocalAssets", 
+		"Only process local:// assets (debug mode)", 
+		() => false
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> logStuckDetections = new ModConfigurationKey<bool>(
+		"logStuckDetections", 
+		"Log when stuck jobs are detected", 
+		() => true
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> logRetries = new ModConfigurationKey<bool>(
+		"logRetries", 
+		"Log when assets are retried", 
+		() => true
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> logCacheClears = new ModConfigurationKey<bool>(
+		"logCacheClears", 
+		"Log when cache is cleared", 
+		() => false
+	);
+	
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> logVerboseDebug = new ModConfigurationKey<bool>(
+		"logVerboseDebug", 
+		"Enable verbose debug logging", 
+		() => false
+	);
+	
+	// Stats (read-only)
 	[AutoRegisterConfigKey]
 	private static readonly ModConfigurationKey<bool> showStats = new ModConfigurationKey<bool>(
 		"showStats", 
@@ -80,13 +210,7 @@ public class StuckAssetMod : ResoniteMod {
 		() => 0
 	);
 	
-	// Timeout configuration
-	private static readonly float STUCK_JOB_TIMEOUT_SECONDS = 300f; // 5 minutes
-	private static readonly float MONITOR_INTERVAL_SECONDS = 10f; // Check every 10 seconds
-	private static readonly float SESSION_DOWNLOAD_TIMEOUT_SECONDS = 120f; // 2 minutes for session downloads
-	private static readonly float RETRY_DELAY_SECONDS = 60f; // Wait 1 minute before retrying
-	private static readonly float RETRY_CHECK_INTERVAL_SECONDS = 30f; // Check retry queue every 30 seconds
-	private static readonly float STATS_UPDATE_INTERVAL_SECONDS = 5f; // Update stats every 5 seconds
+	private static readonly float STATS_UPDATE_INTERVAL_SECONDS = 10f; // Update stats every 10 seconds
 
 	public override void OnEngineInit() {
 		instance = this;
@@ -95,10 +219,15 @@ public class StuckAssetMod : ResoniteMod {
 		Config = GetConfiguration();
 		Config?.Save(true);
 		
+		if (!Config?.GetValue(enabled) ?? false) {
+			Msg("StuckAsset mod is disabled in config");
+			return;
+		}
+		
 		Harmony harmony = new("com.troyBORG.StuckAsset");
 		harmony.PatchAll();
 		
-		// Start monitoring tasks
+		// Start monitoring tasks (ONLY background monitor, no Update patch)
 		cancellationTokenSource = new CancellationTokenSource();
 		monitorTask = Task.Run(() => MonitorAssetJobs(cancellationTokenSource.Token));
 		_ = Task.Run(() => ProcessRetryQueue(cancellationTokenSource.Token));
@@ -121,8 +250,10 @@ public class StuckAssetMod : ResoniteMod {
 	private async Task MonitorAssetJobs(CancellationToken cancellationToken) {
 		while (!cancellationToken.IsCancellationRequested) {
 			try {
-				await Task.Delay(TimeSpan.FromSeconds(MONITOR_INTERVAL_SECONDS), cancellationToken);
+				var interval = Config?.GetValue(monitorIntervalSeconds) ?? 10f;
+				await Task.Delay(TimeSpan.FromSeconds(interval), cancellationToken);
 				
+				if (!Config?.GetValue(enabled) ?? false) continue;
 				if (Engine.Current?.AssetManager == null) continue;
 				
 				var gatherer = GetAssetGatherer(Engine.Current.AssetManager);
@@ -150,6 +281,11 @@ public class StuckAssetMod : ResoniteMod {
 				
 				foreach (var job in jobs) {
 					if (job == null) continue;
+					
+					// Check if we should only process local assets
+					if (Config?.GetValue(onlyAffectLocalAssets) ?? false) {
+						if (job.URL?.Scheme != "local") continue;
+					}
 					
 					// Track new jobs
 					lock (jobStartTimesLock) {
@@ -185,7 +321,7 @@ public class StuckAssetMod : ResoniteMod {
 					currentRetryQueueSize = retryQueue.Count;
 				}
 				
-				if (stuckCount > 0) {
+				if (stuckCount > 0 && (Config?.GetValue(logStuckDetections) ?? true)) {
 					Msg($"Detected {stuckCount} stuck asset job(s), skipped {cleanedCount}");
 				}
 			} catch (OperationCanceledException) {
@@ -201,11 +337,19 @@ public class StuckAssetMod : ResoniteMod {
 			return false;
 		}
 		
-		// For local:// assets, check if the owner has left the session
+		// Get timeout values from config
+		var localTimeout = Config?.GetValue(localTimeoutSeconds) ?? 90f;
+		var remoteTimeout = Config?.GetValue(remoteTimeoutSeconds) ?? 240f;
+		
+		// For local:// assets, check if the owner has left the session (with fallback)
+		bool ownerLeft = false;
 		if (job.URL?.Scheme == "local" && job.URL.Host != null) {
-			if (!IsUserStillInSession(job.URL.Host)) {
-				// Owner has left - fail immediately
-				return true;
+			// Try to detect owner leaving, but don't rely on it completely
+			try {
+				ownerLeft = !IsUserStillInSession(job.URL.Host);
+			} catch {
+				// If detection fails, assume owner is still there (safer)
+				ownerLeft = false;
 			}
 		}
 		
@@ -222,10 +366,10 @@ public class StuckAssetMod : ResoniteMod {
 		
 		// Session downloads should timeout faster
 		if (job.URL?.Scheme == "local") {
-			return elapsed > SESSION_DOWNLOAD_TIMEOUT_SECONDS;
+			return elapsed > localTimeout;
 		}
 		
-		return elapsed > STUCK_JOB_TIMEOUT_SECONDS;
+		return elapsed > remoteTimeout;
 	}
 
 	private bool IsUserStillInSession(string machineId) {
@@ -247,7 +391,9 @@ public class StuckAssetMod : ResoniteMod {
 			
 			return false; // User not found in any world
 		} catch (Exception ex) {
-			Error($"Error checking if user {machineId} is in session: {ex}");
+			if (Config?.GetValue(logVerboseDebug) ?? false) {
+				Warn($"Error checking if user {machineId} is in session: {ex}");
+			}
 			// On error, assume they're still there to avoid false positives
 			return true;
 		}
@@ -261,30 +407,86 @@ public class StuckAssetMod : ResoniteMod {
 			string reason = "Job timed out (skipped by StuckAsset mod, will retry later)";
 			bool ownerLeft = false;
 			if (job.URL.Scheme == "local" && job.URL.Host != null) {
-				if (!IsUserStillInSession(job.URL.Host)) {
+				try {
+					ownerLeft = !IsUserStillInSession(job.URL.Host);
+				} catch {
+					ownerLeft = false;
+				}
+				if (ownerLeft) {
 					reason = "Asset owner left the session (skipped by StuckAsset mod, will retry later)";
-					ownerLeft = true;
 				}
 			}
 			
-			// Clear the cache for this asset
-			ClearAssetCache(job.URL);
+			// Check retry count
+			lock (retryQueueLock) {
+				if (!retryCounts.TryGetValue(job.URL, out int retryCount)) {
+					retryCount = 0;
+				}
+				
+				var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
+				if (retryCount >= maxRetries) {
+					// Too many retries, give up permanently
+					if (Config?.GetValue(logStuckDetections) ?? true) {
+						Warn($"Asset {job.URL} exceeded max retries ({maxRetries}), giving up");
+					}
+					CancelJob(job);
+					return;
+				}
+			}
 			
-			// Cancel/remove the job from the queue instead of failing it
+			// Check cooldown
+			lock (retryQueueLock) {
+				if (assetCooldowns.TryGetValue(job.URL, out DateTime cooldownUntil)) {
+					if (DateTime.UtcNow < cooldownUntil) {
+						// Still in cooldown, just cancel and skip
+						CancelJob(job);
+						return;
+					}
+				}
+			}
+			
+			// Clear cache based on retry count and config
+			bool shouldClearCache = Config?.GetValue(clearCacheOnSkip) ?? false;
+			lock (retryQueueLock) {
+				if (retryCounts.TryGetValue(job.URL, out int count)) {
+					// Clear cache after 2nd retry attempt
+					if (count >= 2) {
+						shouldClearCache = true;
+					}
+				}
+			}
+			
+			if (shouldClearCache) {
+				ClearAssetCache(job.URL);
+			}
+			
+			// Cancel/remove the job from the queue
 			CancelJob(job);
 			
-			// Add to retry queue (unless owner left - no point retrying those immediately)
-			if (!ownerLeft) {
-				lock (retryQueueLock) {
-					retryQueue[job.URL] = DateTime.UtcNow.AddSeconds(RETRY_DELAY_SECONDS);
+			// Check retry queue size limit
+			lock (retryQueueLock) {
+				var maxQueueSize = Config?.GetValue(maxRetryQueueSize) ?? 250;
+				if (retryQueue.Count >= maxQueueSize) {
+					if (Config?.GetValue(logStuckDetections) ?? true) {
+						Warn($"Retry queue full ({maxQueueSize}), skipping retry for {job.URL}");
+					}
+					return;
 				}
-				Msg($"Skipped stuck job: {job.URL} - {reason}");
-			} else {
-				// For owner-left cases, add to retry queue with longer delay
-				lock (retryQueueLock) {
-					retryQueue[job.URL] = DateTime.UtcNow.AddSeconds(RETRY_DELAY_SECONDS * 2);
+				
+				// Add to retry queue
+				var retryDelay = ownerLeft 
+					? (Config?.GetValue(retryDelayOwnerLeftSeconds) ?? 300f)
+					: (Config?.GetValue(retryDelaySeconds) ?? 45f);
+				
+				retryQueue[job.URL] = DateTime.UtcNow.AddSeconds(retryDelay);
+				
+				// Set cooldown
+				var cooldown = Config?.GetValue(cooldownPerAssetSeconds) ?? 120f;
+				assetCooldowns[job.URL] = DateTime.UtcNow.AddSeconds(cooldown);
+				
+				if (Config?.GetValue(logStuckDetections) ?? true) {
+					Msg($"Skipped stuck job: {job.URL} - {reason}");
 				}
-				Msg($"Skipped stuck job (owner left): {job.URL} - will retry later");
 			}
 		} catch (Exception ex) {
 			Error($"Error cleaning up stuck job {job.URL}: {ex}");
@@ -293,16 +495,19 @@ public class StuckAssetMod : ResoniteMod {
 
 	private void CancelJob(EngineGatherJob job) {
 		try {
-			// Try to find a Cancel method
-			var cancelMethod = typeof(GatherJob).GetMethod("Cancel", 
-				System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-			if (cancelMethod != null) {
-				cancelMethod.Invoke(job, null);
-				return;
+			var shouldCancel = Config?.GetValue(cancelJobOnSkip) ?? true;
+			
+			if (shouldCancel) {
+				// Try to find a Cancel method
+				var cancelMethod = typeof(GatherJob).GetMethod("Cancel", 
+					System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+				if (cancelMethod != null) {
+					cancelMethod.Invoke(job, null);
+					return;
+				}
 			}
 			
-			// If no Cancel method, try to fail it with a special flag that might allow retry
-			// Or we can just let it fail but clear cache so it can be retried
+			// If no Cancel method or cancelJobOnSkip is false, try to fail it
 			var failMethod = typeof(GatherJob).GetMethod("Fail", 
 				System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 			if (failMethod != null) {
@@ -315,7 +520,9 @@ public class StuckAssetMod : ResoniteMod {
 				});
 			}
 		} catch (Exception ex) {
-			Warn($"Could not cancel job {job.URL}, may need manual cleanup: {ex}");
+			if (Config?.GetValue(logVerboseDebug) ?? false) {
+				Warn($"Could not cancel job {job.URL}, may need manual cleanup: {ex}");
+			}
 		}
 	}
 
@@ -323,13 +530,20 @@ public class StuckAssetMod : ResoniteMod {
 		try {
 			if (Engine.Current?.LocalDB == null) return;
 			
-			// Try to delete the cached asset record
+			if (Config?.GetValue(logCacheClears) ?? false) {
+				Msg($"Clearing cache for {assetUrl}");
+			}
+			
+			// Try to get the record and delete the file if it exists
 			_ = Task.Run(async () => {
 				try {
 					var record = await Engine.Current.LocalDB.TryFetchAssetRecordAsync(assetUrl);
 					if (record?.path != null && System.IO.File.Exists(record.path)) {
 						try {
 							System.IO.File.Delete(record.path);
+							if (Config?.GetValue(logCacheClears) ?? false) {
+								Msg($"Deleted cached file: {record.path}");
+							}
 						} catch {
 							// Ignore file deletion errors
 						}
@@ -348,15 +562,19 @@ public class StuckAssetMod : ResoniteMod {
 				}
 			});
 		} catch (Exception ex) {
-			Warn($"Could not clear cache for {assetUrl}: {ex}");
+			if (Config?.GetValue(logVerboseDebug) ?? false) {
+				Warn($"Could not clear cache for {assetUrl}: {ex}");
+			}
 		}
 	}
 
 	private async Task ProcessRetryQueue(CancellationToken cancellationToken) {
 		while (!cancellationToken.IsCancellationRequested) {
 			try {
-				await Task.Delay(TimeSpan.FromSeconds(RETRY_CHECK_INTERVAL_SECONDS), cancellationToken);
+				var interval = Config?.GetValue(retryCheckIntervalSeconds) ?? 20f;
+				await Task.Delay(TimeSpan.FromSeconds(interval), cancellationToken);
 				
+				if (!Config?.GetValue(enabled) ?? false) continue;
 				if (Engine.Current?.AssetManager == null) continue;
 				
 				var now = DateTime.UtcNow;
@@ -367,6 +585,23 @@ public class StuckAssetMod : ResoniteMod {
 					var toRemove = new List<Uri>();
 					foreach (var kvp in retryQueue) {
 						if (now >= kvp.Value) {
+							// Check cooldown
+							if (assetCooldowns.TryGetValue(kvp.Key, out DateTime cooldownUntil)) {
+								if (now < cooldownUntil) {
+									continue; // Still in cooldown
+								}
+							}
+							
+							// Check retry count
+							if (!retryCounts.TryGetValue(kvp.Key, out int count)) {
+								count = 0;
+							}
+							var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
+							if (count >= maxRetries) {
+								toRemove.Add(kvp.Key);
+								continue; // Exceeded max retries
+							}
+							
 							toRetry.Add(kvp.Key);
 							toRemove.Add(kvp.Key);
 						}
@@ -379,10 +614,25 @@ public class StuckAssetMod : ResoniteMod {
 				// Retry the assets
 				foreach (var url in toRetry) {
 					try {
-						// Re-request the asset with low priority so it doesn't block new assets
-						_ = Engine.Current.AssetManager.GatherAsset(url, 0.1f);
+						// Increment retry count
+						lock (retryQueueLock) {
+							if (!retryCounts.TryGetValue(url, out int count)) {
+								count = 0;
+							}
+							retryCounts[url] = count + 1;
+						}
+						
+						// Re-request the asset with configured priority
+						var priority = Config?.GetValue(retryPriority) ?? 0.1f;
+						_ = Engine.Current.AssetManager.GatherAsset(url, priority);
 						totalJobsRetried++;
-						Msg($"Retrying previously skipped asset: {url}");
+						
+						if (Config?.GetValue(logRetries) ?? true) {
+							lock (retryQueueLock) {
+								var count = retryCounts.TryGetValue(url, out int c) ? c : 0;
+								Msg($"Retrying previously skipped asset (attempt {count}): {url}");
+							}
+						}
 					} catch (Exception ex) {
 						Warn($"Error retrying asset {url}: {ex}");
 					}
@@ -424,30 +674,5 @@ public class StuckAssetMod : ResoniteMod {
 		var field = typeof(AssetManager).GetField("assetGatherer", 
 			System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 		return field?.GetValue(manager) as EngineAssetGatherer;
-	}
-
-	// Patch to monitor and clean up jobs in AssetManager.Update
-	[HarmonyPatch(typeof(AssetManager), "Update")]
-	class AssetManager_Update_Patch {
-		static void Postfix(AssetManager __instance, double assetsMaxMilliseconds, double particlesMaxMilliseconds) {
-			try {
-				if (instance == null) return;
-				
-				var gatherer = instance.GetAssetGatherer(__instance);
-				if (gatherer == null) return;
-				
-				var jobs = new List<EngineGatherJob>();
-				gatherer.GetActiveJobs(jobs);
-				
-				var now = DateTime.UtcNow;
-				foreach (var job in jobs) {
-					if (job != null && instance.IsJobStuck(job, now)) {
-						instance.CleanupStuckJob(job);
-					}
-				}
-			} catch (Exception ex) {
-				StuckAssetMod.Error($"Error in AssetManager.Update patch: {ex}");
-			}
-		}
 	}
 }
