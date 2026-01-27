@@ -48,7 +48,9 @@ When this happens, the asset queue can get blocked, preventing new assets from l
 ## Configuration
 <img width="2560" height="1080" alt="image" src="https://github.com/user-attachments/assets/46c5b8e8-62e8-477e-993e-b9e13b863899" />
 The mod has extensive configuration options accessible through Resonite's mod configuration menu. All settings can be adjusted in-game without restarting.
+<details><summary>Explaination of each settings</summary>
 
+   
 ### Timeout Settings
 
 - **monitorIntervalSeconds** (default: 10s) - How often to check for stuck jobs
@@ -91,6 +93,7 @@ The mod has extensive configuration options accessible through Resonite's mod co
 - **statsTotalRetried** - Total jobs retried
 - **statsRetryQueueSize** - Current retry queue size
 - **statsActiveJobs** - Current active asset jobs being monitored
+</details>
 
 ## How it works
 
@@ -123,7 +126,9 @@ The mod uses a background monitoring task (not frame-based patches) to minimize 
 
 3. The mod will automatically copy to your Resonite `rml_mods` folder if `CopyToMods` is enabled (default). Or manually copy `StuckAsset/bin/Debug/net10.0/StuckAsset.dll` to your `rml_mods` folder.
 
-## Troubleshooting
+<details><summary>
+   ## Troubleshooting</summary>
+
 
 ### Mod not loading
 - Make sure ResoniteModLoader is installed correctly
@@ -160,6 +165,8 @@ The mod is designed to be lightweight:
 - Configurable monitoring intervals (default: 10 seconds)
 - Minimal overhead when no stuck jobs are detected
 - Statistics update every 10 seconds (not every frame)
+
+</details>
 
 ## Contributing
 
