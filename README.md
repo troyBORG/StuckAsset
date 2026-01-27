@@ -46,7 +46,7 @@ When this happens, the asset queue can get blocked, preventing new assets from l
    ```
 
 ## Configuration
-
+<img width="2560" height="1080" alt="image" src="https://github.com/user-attachments/assets/46c5b8e8-62e8-477e-993e-b9e13b863899" />
 The mod has extensive configuration options accessible through Resonite's mod configuration menu. All settings can be adjusted in-game without restarting.
 
 ### Timeout Settings
