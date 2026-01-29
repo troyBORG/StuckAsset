@@ -14,7 +14,7 @@ using SkyFrost.Base;
 namespace StuckAsset;
 // Mod to fix stuck asset queues in Resonite
 public class StuckAssetMod : ResoniteMod {
-	internal const string VERSION_CONSTANT = "1.1.0";
+	internal const string VERSION_CONSTANT = "1.1.1";
 	public override string Name => "StuckAsset";
 	public override string Author => "troyBORG";
 	public override string Version => VERSION_CONSTANT;
