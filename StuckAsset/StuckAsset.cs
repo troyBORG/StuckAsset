@@ -12,9 +12,12 @@ using ResoniteModLoader;
 using SkyFrost.Base;
 
 namespace StuckAsset;
-// Mod to fix stuck asset queues in Resonite
+// Mod to fix stuck asset queues in Resonite.
+// Thread-safety note: CancelJob, GatherAsset, LocalDB and WorldManager are called from background tasks.
+// If the engine assumes single-threaded access, this can contribute to deadlocks. skipHttpHttps (default on)
+// avoids touching the HTTP fetch path where engine wedges are most likely.
 public class StuckAssetMod : ResoniteMod {
-	internal const string VERSION_CONSTANT = "1.1.1";
+	internal const string VERSION_CONSTANT = "1.1.2";
 	public override string Name => "StuckAsset";
 	public override string Author => "troyBORG";
 	public override string Version => VERSION_CONSTANT;
@@ -147,6 +150,22 @@ public class StuckAssetMod : ResoniteMod {
 		"onlyAffectLocalAssets", 
 		"Only process local:// assets (debug mode)", 
 		() => false
+	);
+	
+	/// <summary>Do not cancel/retry http:// or https:// jobs. Keeps mod focused on local/session stuck assets and avoids touching the HTTP fetch path that can wedge the engine. Default: true.</summary>
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<bool> skipHttpHttps = new ModConfigurationKey<bool>(
+		"skipHttpHttps", 
+		"Skip http/https assets (don't cancel or retry; avoids engine wedge risk)", 
+		() => true
+	);
+	
+	/// <summary>Max retries for plain http:// when skipHttpHttps is false. Plain HTTP is more likely to hang. Default: 0.</summary>
+	[AutoRegisterConfigKey]
+	private static readonly ModConfigurationKey<int> maxRetriesForHttp = new ModConfigurationKey<int>(
+		"maxRetriesForHttp", 
+		"Max retries for http:// only (when skipHttpHttps is false)", 
+		() => 0
 	);
 	
 	[AutoRegisterConfigKey]
@@ -297,6 +316,11 @@ public class StuckAssetMod : ResoniteMod {
 					// Check if we should only process local assets
 					if (Config?.GetValue(onlyAffectLocalAssets) ?? false) {
 						if (job.URL?.Scheme != "local") continue;
+					}
+					
+					// Do not touch http/https when skipHttpHttps is on (avoids engine wedge risk)
+					if (Config?.GetValue(skipHttpHttps) ?? true) {
+						if (job.URL?.Scheme is "http" or "https") continue;
 					}
 					
 					// Track new jobs
@@ -512,6 +536,11 @@ public class StuckAssetMod : ResoniteMod {
 	private void CleanupStuckJob(EngineGatherJob job) {
 		if (job.URL == null) return;
 		
+		// Do not touch http/https when skipHttpHttps is on
+		if (Config?.GetValue(skipHttpHttps) ?? true) {
+			if (job.URL.Scheme is "http" or "https") return;
+		}
+		
 		try {
 			// Determine the reason for cleanup
 			string reason = "Job timed out (skipped by StuckAsset mod, will retry later)";
@@ -527,13 +556,15 @@ public class StuckAssetMod : ResoniteMod {
 				}
 			}
 			
-			// Check retry count
+			// Check retry count (use lower limit for plain http)
 			lock (retryQueueLock) {
 				if (!retryCounts.TryGetValue(job.URL, out int retryCount)) {
 					retryCount = 0;
 				}
 				
-				var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
+				var maxRetries = job.URL.Scheme == "http"
+					? (Config?.GetValue(maxRetriesForHttp) ?? 0)
+					: (Config?.GetValue(maxRetriesPerAsset) ?? 3);
 				if (retryCount >= maxRetries) {
 					// Too many retries, give up permanently
 					if (Config?.GetValue(logStuckDetections) ?? true) {
@@ -707,16 +738,24 @@ public class StuckAssetMod : ResoniteMod {
 				var now = DateTime.UtcNow;
 				List<Uri> toRetry = new List<Uri>();
 				
-				// Find URLs that are ready to retry
+				// Find URLs that are ready to retry (skip http/https when skipHttpHttps is on)
+				var skipRemoteHttp = Config?.GetValue(skipHttpHttps) ?? true;
 				lock (retryQueueLock) {
 					var toRemove = new List<Uri>();
 					foreach (var kvp in retryQueue) {
 						if (now >= kvp.Value) {
-							// Check retry count
+							// Do not retry http/https when skipHttpHttps is on
+							if (skipRemoteHttp && (kvp.Key.Scheme is "http" or "https")) {
+								toRemove.Add(kvp.Key);
+								continue;
+							}
+							// Check retry count (use lower limit for plain http)
 							if (!retryCounts.TryGetValue(kvp.Key, out int count)) {
 								count = 0;
 							}
-							var maxRetries = Config?.GetValue(maxRetriesPerAsset) ?? 3;
+							var maxRetries = kvp.Key.Scheme == "http"
+								? (Config?.GetValue(maxRetriesForHttp) ?? 0)
+								: (Config?.GetValue(maxRetriesPerAsset) ?? 3);
 							if (count >= maxRetries) {
 								toRemove.Add(kvp.Key);
 								continue; // Exceeded max retries
